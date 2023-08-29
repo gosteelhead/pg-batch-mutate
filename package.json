@@ -1,7 +1,7 @@
 {
-  "name": "@graphile-contrib/pg-many-to-many",
-  "version": "2.0.0-beta.1",
-  "description": "Add connection fields for many-to-many relations",
+  "name": "@gosteelhead/pg-batch-mutate",
+  "version": "0.0.1",
+  "description": "Batch mutations",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -12,12 +12,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/graphile-contrib/pg-many-to-many.git"
+    "url": "git+https://github.com/gosteelhead/pg-batch-mutate.git"
   },
-  "author": "Matt Bretl",
+  "author": "Mark Halonen",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/graphile-contrib/pg-many-to-many/issues"
+    "url": "https://github.com/gosteelhead/pg-batch-mutate/issues"
   },
   "devDependencies": {
     "@dataplan/pg": "^0.0.1-beta.1",
