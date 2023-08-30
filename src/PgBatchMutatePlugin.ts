@@ -1,11 +1,12 @@
 import "graphile-config";
 
 import type { PgResource } from "@dataplan/pg";
-import { assertExecutableStep, constant } from "grafast";
+import { assertExecutableStep, constant, lambda } from "grafast";
 import type { GraphQLOutputType } from "grafast/graphql";
 import { withPgClientTransaction } from "postgraphile/@dataplan/pg";
 import { __InputListStep } from "postgraphile/grafast";
 import { GraphQLList } from "postgraphile/graphql";
+import { sql, SQL, compile } from "postgraphile/pg-sql2";
 
 export function tagToString(
     str: undefined | null | boolean | string | (string | boolean)[],
@@ -325,17 +326,78 @@ export const PgBatchMutatePlugin: GraphileConfig.Plugin = {
                     //   console.log(args)
                     // },
                     plan: (object, args, info) => {
-                      console.log(object)
-                      const i = args.getRaw(["input", "mnEvent"]) as __InputListStep
-                      console.log(i.at(0))
-                      console.log('args: ', args.getRaw(["input", "mnEvent"]))
+
+                      const $i = args.getRaw(["input", "mnEvent"]) 
+
+
+
+                      return withPgClientTransaction(executor, $i, async (client, arr) => {
+                        console.log(arr)
+                        const sqlColumns: SQL[] = []
+                        const sqlValues: SQL[][] = Array(arr.length).fill([])
+                        console.log(resource.codec.attributes)
+                        for(let idx = 0; idx < arr.length; idx++) {
+                          
+                          const inputRow = arr[idx]
+                          for(let [key, value] of Object.entries(resource.codec.attributes)) {
+                            console.log(key)
+                            if(idx === 0) {
+                              sqlColumns.push(sql.identifier(key))
+                            }
+
+                            const dataValue = inputRow[key]
+                            console.log('dataValue: ', dataValue)
+
+                            // If the key exists, store the data else store DEFAULT.
+                            if (inputRow[key] !== undefined) {
+                              // TODO: This used to use gql2pg in v4, couldn't find the equivalent.
+                              console.log(inputRow, ' has ', key)
+                              sqlValues[idx] = [...sqlValues[idx], sql.value(dataValue)]
+                            } else {
+                              sqlValues[idx] = [...sqlValues[idx], sql.raw('default')]
+                            }
+                              
+                          }
+
+                        }
+
+                        console.log('sqlValues: ', sqlValues)
+
+
+                        console.log(resource.codec.sqlType)
+
+                        const mutationQuery = sql.query`
+                            INSERT INTO ${resource.codec.sqlType} 
+                            ${
+                              sqlColumns.length
+                                ? sql.fragment`(${sql.join(sqlColumns, ', ')})
+                              VALUES (${sql.join(
+                                sqlValues.map((dataGroup) => sql.fragment`${sql.join(dataGroup, ', ')}`),
+                                '),('
+                              )})`
+                                : sql.fragment`default values`
+                            } returning *`
+
+
+
+
+                        const compiled = compile(mutationQuery)
+
+                        console.log(compiled.values)
+
+                        const result = await client.query({ text: compiled.text, values: compiled.values });
+                        console.log(result)
+                        return result
+                      })
+
+                      // console.log('args: ', args.getRaw(["input", "mnEvent"]))
                       // for(const el of args.getRaw(["input", "mnEvent"])) {
 
                       // }
-                      return withPgClientTransaction(executor, constant(null), async (client) => {
-                        const result = await client.query({ text: `select 1` });
-                        return result
-                      })
+                      // return withPgClientTransaction(executor, constant(null), async (client) => {
+                      //   const result = await client.query({ text: `select 1` });
+                      //   return result
+                      // })
                     }
                     // plan: EXPORTABLE(
                     //   (object, pgInsertSingle, resource) =>
