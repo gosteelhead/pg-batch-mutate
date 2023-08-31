@@ -1,12 +1,14 @@
 import "graphile-config";
 
 import type { PgResource } from "@dataplan/pg";
-import { assertExecutableStep, constant, lambda } from "grafast";
+import { assertExecutableStep, constant, lambda, object, ObjectStep } from "grafast";
 import type { GraphQLOutputType } from "grafast/graphql";
 import { withPgClientTransaction } from "postgraphile/@dataplan/pg";
 import { __InputListStep } from "postgraphile/grafast";
 import { GraphQLList } from "postgraphile/graphql";
 import { sql, SQL, compile } from "postgraphile/pg-sql2";
+import { EXPORTABLE } from "postgraphile/graphile-build";
+import { TYPES, listOfCodec } from '@dataplan/pg'
 
 export function tagToString(
     str: undefined | null | boolean | string | (string | boolean)[],
@@ -57,6 +59,10 @@ const isInsertable = (
   if (resource.codec.isAnonymous) return false;
   return build.behavior.pgResourceMatches(resource, "resource:insert") === true;
 };
+
+const isManyCreateEnabled = (resource: PgResource<any, any, any, any, any>) => {
+  return (resource.extensions?.tags ?? {})['mncud'] || (resource.extensions?.tags ?? {})['mnc']
+}
 
 export const PgBatchMutatePlugin: GraphileConfig.Plugin = {
   name: "PgMutationBatchCreatePlugin",
@@ -112,9 +118,10 @@ export const PgBatchMutatePlugin: GraphileConfig.Plugin = {
         } = build;
         const insertableResources = Object.values(
           build.input.pgRegistry.pgResources,
-        ).filter((resource) => isInsertable(build, resource));
+        ).filter((resource) => isInsertable(build, resource)).filter(isManyCreateEnabled);
 
         insertableResources.forEach((resource) => {
+
           build.recoverable(null, () => {
             const tableTypeName = inflection.tableType(resource.codec);
             const inputTypeName = inflection.mnCreateInputType(resource);
@@ -158,7 +165,7 @@ export const PgBatchMutatePlugin: GraphileConfig.Plugin = {
                                 "field",
                               ),
                               type: new GraphQLNonNull(new GraphQLList(new GraphQLNonNull(TableInput))),
-                              autoApplyAfterParentApplyPlan: true,
+                              // autoApplyAfterParentApplyPlan: true,
                               // applyPlan: EXPORTABLE(
                               //   () =>
                               //     function plan(
@@ -184,6 +191,7 @@ export const PgBatchMutatePlugin: GraphileConfig.Plugin = {
 
             const payloadTypeName = inflection.mnCreatePayloadType(resource);
 
+
             build.registerObjectType(
               payloadTypeName,
               {
@@ -203,18 +211,18 @@ export const PgBatchMutatePlugin: GraphileConfig.Plugin = {
                   return {
                     clientMutationId: {
                       type: GraphQLString,
-                      // plan: EXPORTABLE(
-                      //   (constant) =>
-                      //     function plan($mutation: ObjectStep<any>) {
-                      //       return (
-                      //         $mutation.getStepForKey(
-                      //           "clientMutationId",
-                      //           true,
-                      //         ) ?? constant(null)
-                      //       );
-                      //     },
-                      //   [constant],
-                      // ),
+                      plan: EXPORTABLE(
+                        (constant) =>
+                          function plan($mutation: ObjectStep<any>) {
+                            return (
+                              $mutation.getStepForKey(
+                                "clientMutationId",
+                                true,
+                              ) ?? constant(null)
+                            );
+                          },
+                        [constant],
+                      ),
                     },
                     ...(TableType &&
                     build.behavior.pgResourceMatches(
@@ -230,17 +238,19 @@ export const PgBatchMutatePlugin: GraphileConfig.Plugin = {
                             {
                               description: `The \`${tableTypeName}\`s that was created by this mutation.`,
                               type: new GraphQLList(TableType),
-                              // plan: EXPORTABLE(
-                              //   () =>
-                              //     function plan(
-                              //       $object: ObjectStep<{
-                              //         result: PgInsertSingleStep;
-                              //       }>,
-                              //     ) {
-                              //       return $object.get("result");
-                              //     },
-                              //   [],
-                              // ),
+                              plan: EXPORTABLE(
+                                () =>
+                                  function plan(
+                                    $result: ObjectStep<any>,
+                                  ) {
+                                    const $ids = $result.get('ids');
+                                    const $rows = resource.find();
+                                    $rows.where(sql`${$rows.alias}.id = any(${$rows.placeholder($ids, listOfCodec(TYPES.int))})`)
+                                    return $rows
+                                  },
+                                [],
+                              ),
+                              
                               deprecationReason: tagToString(
                                 resource.extensions?.tags?.deprecated,
                               ),
@@ -274,7 +284,7 @@ export const PgBatchMutatePlugin: GraphileConfig.Plugin = {
 
         const insertableSources = Object.values(
           build.input.pgRegistry.pgResources,
-        ).filter((resource) => isInsertable(build, resource));
+        ).filter((resource) => isInsertable(build, resource)).filter(isManyCreateEnabled);
         return insertableSources.reduce((memo, resource) => {
           return build.recoverable(memo, () => {
             const createFieldName = inflection.mnCreateField(resource);
@@ -322,36 +332,39 @@ export const PgBatchMutatePlugin: GraphileConfig.Plugin = {
                     deprecationReason: tagToString(
                       resource.extensions?.tags?.deprecated,
                     ),
-                    // resolve: (source, args, context, info) => {
-                    //   console.log(args)
-                    // },
-                    plan: (object, args, info) => {
+                    plan: (parentPlan, args, info) => {
 
                       const $i = args.getRaw(["input", "mnEvent"]) 
 
 
 
-                      return withPgClientTransaction(executor, $i, async (client, arr) => {
-                        console.log(arr)
+                      const $ids = withPgClientTransaction(executor, $i, async (client, arr) => {
+
                         const sqlColumns: SQL[] = []
                         const sqlValues: SQL[][] = Array(arr.length).fill([])
-                        console.log(resource.codec.attributes)
+
                         for(let idx = 0; idx < arr.length; idx++) {
                           
                           const inputRow = arr[idx]
+
                           for(let [key, value] of Object.entries(resource.codec.attributes)) {
-                            console.log(key)
+
+                            const graphqlName = inflection.attribute({
+                              attributeName: key,
+                              codec: resource.codec
+                            })
+
+
                             if(idx === 0) {
                               sqlColumns.push(sql.identifier(key))
                             }
 
-                            const dataValue = inputRow[key]
-                            console.log('dataValue: ', dataValue)
+                            const dataValue = inputRow[graphqlName]
 
                             // If the key exists, store the data else store DEFAULT.
-                            if (inputRow[key] !== undefined) {
+                            if (inputRow[graphqlName] !== undefined) {
                               // TODO: This used to use gql2pg in v4, couldn't find the equivalent.
-                              console.log(inputRow, ' has ', key)
+
                               sqlValues[idx] = [...sqlValues[idx], sql.value(dataValue)]
                             } else {
                               sqlValues[idx] = [...sqlValues[idx], sql.raw('default')]
@@ -361,10 +374,7 @@ export const PgBatchMutatePlugin: GraphileConfig.Plugin = {
 
                         }
 
-                        console.log('sqlValues: ', sqlValues)
 
-
-                        console.log(resource.codec.sqlType)
 
                         const mutationQuery = sql.query`
                             INSERT INTO ${resource.codec.sqlType} 
@@ -383,36 +393,19 @@ export const PgBatchMutatePlugin: GraphileConfig.Plugin = {
 
                         const compiled = compile(mutationQuery)
 
-                        console.log(compiled.values)
 
                         const result = await client.query({ text: compiled.text, values: compiled.values });
-                        console.log(result)
-                        return result
+
+                        const ids = result.rows.map(row => (row as any).id);
+
+                        return ids
                       })
 
-                      // console.log('args: ', args.getRaw(["input", "mnEvent"]))
-                      // for(const el of args.getRaw(["input", "mnEvent"])) {
-
-                      // }
-                      // return withPgClientTransaction(executor, constant(null), async (client) => {
-                      //   const result = await client.query({ text: `select 1` });
-                      //   return result
-                      // })
+                      // This is a step representing an object `{ ids: [...] }` that we use to represent the result of our mutation. In the payload we'll expand on what these ids are.
+                      const $result = object({ ids: $ids }); // < IMPORTANT: this is `import { object } from 'grafast';`, not the `object` you had as your first arg.
+                      return $result;
                     }
-                    // plan: EXPORTABLE(
-                    //   (object, pgInsertSingle, resource) =>
-                    //     function plan(_: any, args: FieldArgs) {
-                    //       const plan = object({
-                    //         result: pgInsertSingle(
-                    //           resource,
-                    //           Object.create(null),
-                    //         ),
-                    //       });
-                    //       args.apply(plan);
-                    //       return plan;
-                    //     },
-                    //   [object, pgInsertSingle, resource],
-                    // ),
+
                   },
                 ),
               },
